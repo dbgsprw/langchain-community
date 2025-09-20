@@ -145,7 +145,11 @@ class MongodbLoader(BaseLoader):
         return result
 
     def _process_document(self, doc: Dict) -> Document:
-        """Process a single MongoDB document into a Document object."""
+        """Process a single MongoDB document into a Document object.
+
+        Args:
+            doc: The MongoDB document dictionary to process into a Document object.
+        """
         metadata = self._extract_fields(doc, self.metadata_names, default="")
 
         # Optionally add database and collection names to metadata
