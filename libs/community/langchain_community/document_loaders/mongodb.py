@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, List, Optional, Sequence
+from typing import AsyncIterator, Dict, Iterator, List, Optional, Sequence
 
 from langchain_core.documents import Document
 
@@ -85,6 +85,53 @@ class MongodbLoader(BaseLoader):
         """
         return asyncio.run(self.aload())
 
+    def lazy_load(self) -> Iterator[Document]:
+        """A lazy loader for MongoDB documents.
+
+        Attention:
+
+        This implementation starts an asyncio event loop which
+        will only work if running in a sync env. In an async env, it should
+        fail since there is already an event loop running.
+
+        This code should be updated to kick off the event loop from a separate
+        thread if running within an async context.
+
+        Yields:
+            Document: A document from the MongoDB collection.
+        """
+
+        async def _async_generator():
+            async for doc in self.alazy_load():
+                yield doc
+
+        # Convert async generator to sync generator
+        async_gen = _async_generator()
+
+        async def _collect_all():
+            result = []
+            async for doc in async_gen:
+                result.append(doc)
+            return result
+
+        try:
+            all_docs = asyncio.run(_collect_all())
+            for doc in all_docs:
+                yield doc
+        finally:
+            asyncio.run(async_gen.aclose())
+
+    async def alazy_load(self) -> AsyncIterator[Document]:
+        """Asynchronously yields Document objects one at a time.
+
+        Yields:
+            Document: A document from the MongoDB collection.
+        """
+        projection = self._construct_projection()
+
+        async for doc in self.collection.find(self.filter_criteria, projection):
+            yield self._process_document(doc)
+
     async def aload(self) -> List[Document]:
         """Asynchronously loads data into Document objects."""
         result = []
@@ -93,26 +140,7 @@ class MongodbLoader(BaseLoader):
         projection = self._construct_projection()
 
         async for doc in self.collection.find(self.filter_criteria, projection):
-            metadata = self._extract_fields(doc, self.metadata_names, default="")
-
-            # Optionally add database and collection names to metadata
-            if self.include_db_collection_in_metadata:
-                metadata.update(
-                    {
-                        "database": self.db_name,
-                        "collection": self.collection_name,
-                    }
-                )
-
-            # Extract text content from filtered fields or use the entire document
-            if self.field_names is not None:
-                fields = self._extract_fields(doc, self.field_names, default="")
-                texts = [str(value) for value in fields.values()]
-                text = " ".join(texts)
-            else:
-                text = str(doc)
-
-            result.append(Document(page_content=text, metadata=metadata))
+            result.append(self._process_document(doc))
 
         if len(result) != total_docs:
             logger.warning(
@@ -121,6 +149,29 @@ class MongodbLoader(BaseLoader):
             )
 
         return result
+
+    def _process_document(self, doc: Dict) -> Document:
+        """Process a single MongoDB document into a Document object."""
+        metadata = self._extract_fields(doc, self.metadata_names, default="")
+
+        # Optionally add database and collection names to metadata
+        if self.include_db_collection_in_metadata:
+            metadata.update(
+                {
+                    "database": self.db_name,
+                    "collection": self.collection_name,
+                }
+            )
+
+        # Extract text content from filtered fields or use the entire document
+        if self.field_names is not None:
+            fields = self._extract_fields(doc, self.field_names, default="")
+            texts = [str(value) for value in fields.values()]
+            text = " ".join(texts)
+        else:
+            text = str(doc)
+
+        return Document(page_content=text, metadata=metadata)
 
     def _construct_projection(self) -> Optional[Dict]:
         """Constructs the projection dictionary for MongoDB query based
